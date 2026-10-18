@@ -13,6 +13,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import * as path from 'node:path';
 
@@ -39,6 +40,7 @@ export class ShenvigoApiStack extends cdk.Stack {
 
     // Published by shenvigo-data (T008).
     const tableName = configValue(this, 'tableName', 'TABLE_NAME', '/shenvigo/data/table-name');
+    const tableArn = configValue(this, 'tableArn', 'TABLE_ARN', '/shenvigo/data/table-arn');
     // Published by shenvigo-infra network stack (T007).
     const vpcId = configValue(this, 'vpcId', 'VPC_ID', '/shenvigo/network/vpc-id');
     const privateSubnetIds = configValue(
@@ -47,10 +49,14 @@ export class ShenvigoApiStack extends cdk.Stack {
       'PRIVATE_SUBNET_IDS',
       '/shenvigo/network/private-subnet-ids',
     ).split(',');
-    // TODO: confirm the BFF role ARN SSM path with the shenvigo-bff-web
-    // stack (T060) — it must publish its execution role ARN, and this
-    // stack must deploy after it on first rollout.
-    const bffRoleArn = configValue(this, 'bffRoleArn', 'BFF_ROLE_ARN', '/shenvigo/bff/role-arn');
+    // The BFF execution role has a fixed name (see shenvigo-bff-web's
+    // bff-stack.ts, T060), so the ARN is constructed — no SSM round-trip,
+    // and this stack no longer needs to deploy after bff-web. CDK context
+    // (-c bffRoleArn=...) or BFF_ROLE_ARN still override it.
+    const bffRoleArn =
+      (this.node.tryGetContext('bffRoleArn') as string | undefined) ??
+      process.env.BFF_ROLE_ARN ??
+      `arn:${cdk.Stack.of(this).partition}:iam::${cdk.Stack.of(this).account}:role/shenvigo-bff-web-role`;
     const availabilityZones = (
       (this.node.tryGetContext('availabilityZones') as string | undefined) ??
       process.env.AVAILABILITY_ZONES ??
@@ -91,9 +97,7 @@ export class ShenvigoApiStack extends cdk.Stack {
           'dynamodb:BatchWriteItem',
           'dynamodb:TransactWriteItems',
         ],
-        // TODO: scope to the table ARN and index ARNs once shenvigo-data
-        // publishes them (least privilege).
-        resources: ['*'],
+        resources: [tableArn, `${tableArn}/index/*`],
       }),
     );
 
@@ -102,6 +106,13 @@ export class ShenvigoApiStack extends cdk.Stack {
     fn.addPermission('BffInvoke', {
       principal: new iam.ArnPrincipal(bffRoleArn),
       action: 'lambda:InvokeFunction',
+    });
+
+    // Published for shenvigo-bff-web, which invokes this function directly
+    // via the Lambda SDK (no API Gateway).
+    new ssm.StringParameter(this, 'FunctionNameParam', {
+      parameterName: '/shenvigo/api/function-name',
+      stringValue: fn.functionName,
     });
 
     new cdk.CfnOutput(this, 'ApiFunctionArn', {
