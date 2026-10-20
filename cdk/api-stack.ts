@@ -49,14 +49,6 @@ export class ShenvigoApiStack extends cdk.Stack {
       'PRIVATE_SUBNET_IDS',
       '/shenvigo/network/private-subnet-ids',
     ).split(',');
-    // The BFF execution role has a fixed name (see shenvigo-bff-web's
-    // bff-stack.ts, T060), so the ARN is constructed — no SSM round-trip,
-    // and this stack no longer needs to deploy after bff-web. CDK context
-    // (-c bffRoleArn=...) or BFF_ROLE_ARN still override it.
-    const bffRoleArn =
-      (this.node.tryGetContext('bffRoleArn') as string | undefined) ??
-      process.env.BFF_ROLE_ARN ??
-      `arn:${cdk.Stack.of(this).partition}:iam::${cdk.Stack.of(this).account}:role/shenvigo-bff-web-role`;
     const availabilityZones = (
       (this.node.tryGetContext('availabilityZones') as string | undefined) ??
       process.env.AVAILABILITY_ZONES ??
@@ -101,12 +93,12 @@ export class ShenvigoApiStack extends cdk.Stack {
       }),
     );
 
-    // The BFF is the ONLY allowed invoker. No API Gateway, no Function
-    // URL — no public surface whatsoever.
-    fn.addPermission('BffInvoke', {
-      principal: new iam.ArnPrincipal(bffRoleArn),
-      action: 'lambda:InvokeFunction',
-    });
+    // The BFF is the ONLY allowed invoker, enforced by the invoke grant on
+    // the BFF role's identity policy (shenvigo-bff-web's bff-stack.ts) -
+    // deliberately NOT a resource policy here: Lambda validates that a
+    // resource-policy principal already exists, and the BFF role is created
+    // by shenvigo-bff-web, which deploys after this stack (first-rollout
+    // deadlock). No API Gateway, no Function URL - no public surface.
 
     // Published for shenvigo-bff-web, which invokes this function directly
     // via the Lambda SDK (no API Gateway).
